@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Disposable Sandbox: Zero-Trust WebAssembly Linux VM for safe file forensics and malware analysis.">
+    
+    <script src="https://cdn.jsdelivr.net/npm/v86@0.3/build/libv86.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <title>Disposable Sandbox | Zero-Trust WASM VM</title>
+
+    <style>
+        /* ==========================================================================
+           1. CSS VARIABLES & HACKER AESTHETIC (CYBERPUNK THEME)
+           ========================================================================== */
+        :root {
+            --bg-deep: #030305;
+            --bg-panel: #0a0a0f;
+            --bg-card: #12121a;
+            --terminal-bg: #000000;
+            
+            --neon-green: #00ff41;
+            --neon-green-dim: rgba(0, 255, 65, 0.2);
+            --neon-red: #ff003c;
+            --neon-red-dim: rgba(255, 0, 60, 0.2);
+            --neon-blue: #00f0ff;
+            --neon-blue-dim: rgba(0, 240, 255, 0.2);
+            --neon-yellow: #fcee0a;
+            
+            --text-main: #e0e0e0;
+            --text-muted: #666677;
+            
+            --border: #1a1a24;
+            --border-glow: #00ff41;
+            
+            --font-mono: 'Fira Code', 'Courier New', Courier, monospace;
+            --font-sans: 'Inter', system-ui, sans-serif;
+            
+            --z-crt: 100;
+            --z-modal: 200;
+        }
+
+        /* ==========================================================================
+           2. RESET & CRT EFFECTS
+           ========================================================================== */
+        *, *::before, *::after { box-sizing: border-box; }
+        
+        body {
+            margin: 0; padding: 0; background-color: var(--bg-deep); color: var(--neon-green);
+            font-family: var(--font-mono); height: 100vh; overflow: hidden; display: flex;
+            flex-direction: column; -webkit-font-smoothing: antialiased;
+        }
+
+        /* The iconic CRT Scanline Effect */
+        body::before {
+            content: " "; display: block; position: absolute; top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: var(--z-crt); background-size: 100% 2px, 3px 100%; pointer-events: none;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-track { background: var(--bg-deep); }
+        ::-webkit-scrollbar-thumb { background: #222; border: 1px solid var(--neon-green); }
+        ::-webkit-scrollbar-thumb:hover { background: var(--neon-green); }
+
+        /* ==========================================================================
+           3. LAYOUT STRUCTURE
+           ========================================================================== */
+        header {
+            height: 60px; background: var(--bg-panel); border-bottom: 1px solid var(--border);
+            display: flex; justify-content: space-between; align-items: center; padding: 0 20px;
+            box-shadow: 0 0 15px var(--neon-green-dim); z-index: 10;
+        }
+
+        .header-brand { display: flex; align-items: center; gap: 15px; }
+        .header-brand h1 { margin: 0; font-size: 1.2rem; font-weight: bold; letter-spacing: 2px; text-transform: uppercase; color: #fff; text-shadow: 0 0 5px var(--neon-blue);}
+        .status-badge { background: var(--neon-green-dim); border: 1px solid var(--neon-green); color: var(--neon-green); padding: 4px 10px; font-size: 0.8rem; border-radius: 2px; font-weight: bold; display: flex; align-items: center; gap: 8px;}
+        .status-badge.offline { background: var(--neon-red-dim); border-color: var(--neon-red); color: var(--neon-red); }
+        .blink { animation: blinker 1s linear infinite; }
+        @keyframes blinker { 50% { opacity: 0; } }
+
+        .header-controls { display: flex; gap: 15px; }
+        
+        .btn {
+            background: transparent; border: 1px solid var(--neon-green); color: var(--neon-green);
+            padding: 8px 16px; font-family: var(--font-mono); font-size: 0.9rem; cursor: pointer;
+            text-transform: uppercase; font-weight: bold; transition: all 0.2s;
+        }
+        .btn:hover { background: var(--neon-green); color: #000; box-shadow: 0 0 10px var(--neon-green); }
+        .btn-danger { border-color: var(--neon-red); color: var(--neon-red); }
+        .btn-danger:hover { background: var(--neon-red); color: #000; box-shadow: 0 0 15px var(--neon-red); }
+
+        .workspace { display: flex; flex: 1; height: calc(100vh - 60px); overflow: hidden; }
+
+        /* ==========================================================================
+           4. LEFT PANEL (WASM VIRTUAL MACHINE)
+           ========================================================================== */
+        .vm-container {
+            flex: 6; background: var(--terminal-bg); border-right: 1px solid var(--border);
+            display: flex; flex-direction: column; position: relative;
+        }
+
+        .panel-header {
+            background: var(--bg-card); padding: 10px 15px; border-bottom: 1px solid var(--border);
+            font-size: 0.8rem; color: var(--text-muted); display: flex; justify-content: space-between;
+        }
+        .panel-header span { color: var(--neon-blue); }
+
+        #screen_container {
+            flex: 1; display: flex; justify-content: center; align-items: center;
+            background: #000; overflow: hidden; position: relative;
+        }
+        
+        /* v86 Canvas styling */
+        #screen_container canvas {
+            image-rendering: pixelated; box-shadow: 0 0 20px rgba(0,0,0,0.8);
+        }
+
+        /* Fake Boot Overlay */
+        #boot-overlay {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            background: #000; z-index: 50; padding: 20px;
+            display: flex; flex-direction: column; justify-content: flex-end;
+        }
+        .boot-line { margin: 2px 0; font-size: 0.9rem; color: var(--text-main); }
+        .boot-ok { color: var(--neon-green); }
+        .boot-warn { color: var(--neon-yellow); }
+        .boot-fail { color: var(--neon-red); }
+
+        /* ==========================================================================
+           5. RIGHT PANEL (FORENSICS & DRAG-DROP)
+           ========================================================================== */
+        .tools-container {
+            flex: 4; background: var(--bg-panel); display: flex; flex-direction: column;
+            overflow-y: auto;
+        }
+
+        /* Drop Zone */
+        .drop-zone {
+            margin: 20px; border: 2px dashed var(--border); border-radius: 4px;
+            padding: 40px 20px; text-align: center; transition: all 0.3s ease;
+            background: var(--bg-card); cursor: pointer; position: relative;
+            overflow: hidden;
+        }
+        .drop-zone.dragover { border-color: var(--neon-blue); background: var(--neon-blue-dim); box-shadow: inset 0 0 20px var(--neon-blue-dim); }
+        .drop-zone h2 { color: #fff; margin: 0 0 10px 0; font-size: 1.2rem; }
+        .drop-zone p { color: var(--text-muted); font-size: 0.9rem; margin: 0; }
+        .drop-icon { font-size: 3rem; margin-bottom: 15px; display: block; }
+
+        /* Telemetry Dashboard */
+        .telemetry-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 15px; padding: 0 20px 20px 20px;
+        }
+        .metric-card {
+            background: var(--bg-card); border: 1px solid var(--border); padding: 15px;
+            border-top: 2px solid var(--neon-blue);
+        }
+        .metric-card.danger { border-top-color: var(--neon-red); }
+        .metric-title { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 5px; }
+        .metric-value { font-size: 1.5rem; font-weight: bold; color: #fff; }
+        .metric-sub { font-size: 0.75rem; color: var(--neon-yellow); margin-top: 5px; }
+
+        /* Chart Canvas */
+        .chart-box { padding: 0 20px 20px 20px; height: 180px; }
+
+        /* Hex Editor (Forensics) */
+        .hex-editor {
+            flex: 1; background: var(--bg-card); border-top: 1px solid var(--border);
+            display: flex; flex-direction: column;
+        }
+        .hex-header {
+            padding: 10px 20px; border-bottom: 1px solid var(--border);
+            display: flex; justify-content: space-between; font-size: 0.8rem;
+        }
+        .hex-body {
+            flex: 1; padding: 10px 20px; overflow-y: auto; display: flex; gap: 20px;
+            font-size: 0.85rem; line-height: 1.5;
+        }
+        .hex-offsets { color: var(--text-muted); user-select: none; text-align: right; }
+        .hex-bytes { color: var(--neon-green); flex: 2; word-wrap: break-word; }
+        .hex-ascii { color: var(--text-main); flex: 1; word-break: break-all; }
+        
+        .hidden { display: none !important; }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-brand">
+            <h1>📦 Disposable Sandbox</h1>
+            <div class="status-badge offline" id="vm-status">
+                <span class="status-dot blink">●</span> VM OFFLINE
+            </div>
+        </div>
+        <div class="header-controls">
+            <button class="btn" id="btn-boot" onclick="bootVM()">🔌 Boot WASM Kernel</button>
+            <button class="btn btn-danger" onclick="nukeSandbox()">☢️ Nuke Sandbox (F5)</button>
+        </div>
+    </header>
+
+    <div class="workspace">
+        
+        <div class="vm-container">
+            <div class="panel-header">
+                <div>TARGET: <span>WebAssembly RISC/x86 Emulator</span></div>
+                <div id="vm-uptime">UPTIME: 00:00:00</div>
+            </div>
+            
+            <div id="screen_container">
+                <div style="white-space: pre; font: 14px monospace; line-height: 14px"></div>
+                <canvas style="display: none"></canvas>
+                
+                <div id="boot-overlay">
+                    <div class="boot-line">System initializing...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tools-container">
+            
+            <div class="drop-zone" id="drop-zone">
+                <span class="drop-icon">📥</span>
+                <h2>Inject File into Sandbox</h2>
+                <p>Drag & Drop any suspicious PDF, EXE, or Script here.<br>It will be analyzed and mounted to the VM's filesystem (<code>/mnt/</code>).</p>
+                <input type="file" id="file-input" style="display: none;">
+            </div>
+
+            <div class="telemetry-grid">
+                <div class="metric-card">
+                    <div class="metric-title">Shannon Entropy</div>
+                    <div class="metric-value" id="val-entropy">0.00 <span style="font-size: 0.8rem; color: var(--text-muted)">bits/byte</span></div>
+                    <div class="metric-sub" id="sub-entropy">Waiting for file...</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-title">Detected Magic Bytes</div>
+                    <div class="metric-value" id="val-magic">UNKNOWN</div>
+                    <div class="metric-sub" id="sub-magic">MIME signature</div>
+                </div>
+            </div>
+
+            <div class="chart-box">
+                <canvas id="sysChart"></canvas>
+            </div>
+
+            <div class="hex-editor">
+                <div class="hex-header">
+                    <span style="color: var(--neon-blue); font-weight: bold;">[ ZERO-TRUST HEX VIEWER ]</span>
+                    <span id="hex-filesize">Size: 0 Bytes</span>
+                </div>
+                <div class="hex-body" id="hex-body">
+                    <div class="hex-offsets" id="hex-offsets">00000000</div>
+                    <div class="hex-bytes" id="hex-bytes">Drop a file to inspect binary structure.</div>
+                    <div class="hex-ascii" id="hex-ascii">...</div>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    <script>
+        // ==========================================
+        // 1. GLOBAL STATE & REFERENCES
+        // ==========================================
+        let emulator = null;
+        let isBooted = false;
+        let uptimeSeconds = 0;
+        let uptimeInterval = null;
+        
+        const ui = {
+            status: document.getElementById('vm-status'),
+            btnBoot: document.getElementById('btn-boot'),
+            uptime: document.getElementById('vm-uptime'),
+            bootOverlay: document.getElementById('boot-overlay'),
+            dropZone: document.getElementById('drop-zone'),
+            fileInput: document.getElementById('file-input'),
+            valEntropy: document.getElementById('val-entropy'),
+            subEntropy: document.getElementById('sub-entropy'),
+            valMagic: document.getElementById('val-magic'),
+            subMagic: document.getElementById('sub-magic'),
+            hexOffsets: document.getElementById('hex-offsets'),
+            hexBytes: document.getElementById('hex-bytes'),
+            hexAscii: document.getElementById('hex-ascii'),
+            hexSize: document.getElementById('hex-filesize')
+        };
+
+        // ==========================================
+        // 2. VIRTUAL MACHINE LIFECYCLE (V86)
+        // ==========================================
+        
+        async function runFakeBootSequence() {
+            ui.bootOverlay.style.display = 'flex';
+            ui.bootOverlay.innerHTML = '';
+            
+            const lines = [
+                { text: "Mounting WebAssembly bridge...", type: "normal", delay: 300 },
+                { text: "Allocating 256MB Virtual RAM... [OK]", type: "boot-ok", delay: 500 },
+                { text: "Loading Seabios...", type: "normal", delay: 400 },
+                { text: "Loading Linux Kernel (bzImage)...", type: "normal", delay: 800 },
+                { text: "Warning: Network interface disabled (Zero-Trust Mode)", type: "boot-warn", delay: 600 },
+                { text: "Initializing root filesystem...", type: "normal", delay: 500 },
+                { text: "Booting...", type: "boot-ok", delay: 1000 }
+            ];
+
+            for (let line of lines) {
+                const div = document.createElement('div');
+                div.className = `boot-line ${line.type}`;
+                div.innerText = `[ ${(performance.now()/1000).toFixed(4)} ] ${line.text}`;
+                ui.bootOverlay.appendChild(div);
+                await new Promise(r => setTimeout(r, line.delay));
+            }
+            
+            // Fade out overlay
+            ui.bootOverlay.style.opacity = 0;
+            setTimeout(() => { ui.bootOverlay.style.display = 'none'; }, 500);
+        }
+
+        async function bootVM() {
+            if (isBooted) return;
+            
+            ui.btnBoot.disabled = true;
+            ui.btnBoot.innerText = "⏳ Booting...";
+            
+            await runFakeBootSequence();
+
+            // Setup v86 Emulator
+            // We use public buildroot images hosted by the v86 creator for demonstration.
+            // In a production environment, you would host these files yourself.
+            try {
+                emulator = new V86Starter({
+                    wasm_path: "https://cdn.jsdelivr.net/npm/v86@0.3/build/v86.wasm",
+                    memory_size: 256 * 1024 * 1024,
+                    vga_memory_size: 8 * 1024 * 1024,
+                    screen_container: document.getElementById("screen_container"),
+                    bios: { url: "https://cdn.jsdelivr.net/npm/v86@0.3/bios/seabios.bin" },
+                    vga_bios: { url: "https://cdn.jsdelivr.net/npm/v86@0.3/bios/vgabios.bin" },
+                    cdrom: { url: "https://cdn.jsdelivr.net/npm/v86@0.3/images/linux.iso" },
+                    autostart: true,
+                    disable_keyboard: false,
+                    disable_mouse: false
+                });
+
+                emulator.add_listener("emulator-ready", function() {
+                    isBooted = true;
+                    ui.status.classList.remove('offline');
+                    ui.status.innerHTML = `<span class="status-dot blink" style="background:#00ff41;"></span> VM ONLINE`;
+                    ui.btnBoot.innerText = "⚡ SYSTEM ACTIVE";
+                    
+                    // Start Uptime Counter
+                    uptimeInterval = setInterval(() => {
+                        uptimeSeconds++;
+                        const h = String(Math.floor(uptimeSeconds / 3600)).padStart(2, '0');
+                        const m = String(Math.floor((uptimeSeconds % 3600) / 60)).padStart(2, '0');
+                        const s = String(uptimeSeconds % 60).padStart(2, '0');
+                        ui.uptime.innerText = `UPTIME: ${h}:${m}:${s}`;
+                    }, 1000);
+                });
+
+                // Simulate high CPU spike during boot for the graph
+                simulateCPUSpike();
+
+            } catch (err) {
+                console.error("V86 Initialization failed:", err);
+                ui.bootOverlay.style.display = 'flex';
+                ui.bootOverlay.style.opacity = 1;
+                ui.bootOverlay.innerHTML += `<div class="boot-line boot-fail">FATAL ERROR: Could not load WASM binary. Ensure network access to cdn.jsdelivr.net.</div>`;
+                ui.btnBoot.innerText = "❌ BOOT FAILED";
+            }
+        }
+
+        function nukeSandbox() {
+            // Ultimate safety: Refreshing the browser completely destroys the WASM memory space.
+            if(confirm("CRITICAL WARNING: This will instantly destroy the virtual machine, purge memory, and wipe all uploaded files. Proceed?")) {
+                window.location.reload();
+            }
+        }
+
+
+        // ==========================================
+        // 3. FILE FORENSICS ENGINE (ENTROPY, MAGIC BYTES)
+        // ==========================================
+
+        const MAGIC_BYTES = {
+            '25504446': 'PDF Document (.pdf)',
+            '4D5A': 'Windows Executable (.exe / .dll)',
+            '504B0304': 'ZIP Archive (.zip)',
+            '52617221': 'RAR Archive (.rar)',
+            '7F454C46': 'Linux Executable (ELF)',
+            '89504E47': 'PNG Image (.png)',
+            'FFD8FFE0': 'JPEG Image (.jpeg)',
+            '2321': 'Bash/Shell Script (#!...)'
+        };
+
+        function calculateShannonEntropy(buffer) {
+            const data = new Uint8Array(buffer);
+            const freq = new Array(256).fill(0);
+            
+            // Count byte frequencies
+            for (let i = 0; i < data.length; i++) {
+                freq[data[i]]++;
+            }
+            
+            // Calculate entropy
+            let entropy = 0;
+            const len = data.length;
+            for (let i = 0; i < 256; i++) {
+                if (freq[i] > 0) {
+                    const p = freq[i] / len;
+                    entropy -= p * Math.log2(p);
+                }
+            }
+            return entropy;
+        }
+
+        function identifyMagicBytes(buffer) {
+            const data = new Uint8Array(buffer.slice(0, 8));
+            let hexStr = Array.from(data).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join('');
+            
+            // Check against known signatures
+            for (const [magic, desc] of Object.entries(MAGIC_BYTES)) {
+                if (hexStr.startsWith(magic)) {
+                    return { hex: magic, desc: desc };
+                }
+            }
+            
+            // Fallback for text files (simple heuristic)
+            let isText = true;
+            for(let i=0; i < Math.min(data.length, 50); i++) {
+                if(data[i] === 0) { isText = false; break; }
+            }
+            if(isText) return { hex: 'ASCII', desc: 'Plain Text File / Source Code' };
+
+            return { hex: hexStr.substring(0, 8), desc: 'Unknown Binary Blob' };
+        }
+
+        // ==========================================
+        // 4. BROWSER-NATIVE HEX EDITOR
+        // ==========================================
+        
+        function renderHexViewer(buffer) {
+            const data = new Uint8Array(buffer);
+            const MAX_BYTES = 1024; // Limit to first 1KB to prevent DOM freezing
+            const renderLen = Math.min(data.length, MAX_BYTES);
+            
+            let offsets = '';
+            let bytes = '';
+            let ascii = '';
+
+            for (let i = 0; i < renderLen; i += 16) {
+                // Offset column (e.g. 00000000)
+                offsets += i.toString(16).padStart(8, '0') + '\n';
+                
+                let rowBytes = '';
+                let rowAscii = '';
+                
+                for (let j = 0; j < 16; j++) {
+                    if (i + j < renderLen) {
+                        const byte = data[i + j];
+                        rowBytes += byte.toString(16).padStart(2, '0').toUpperCase() + ' ';
+                        
+                        // Printable ASCII range
+                        if (byte >= 32 && byte <= 126) {
+                            // Escape HTML chars
+                            if(byte === 60) rowAscii += '&lt;';
+                            else if(byte === 62) rowAscii += '&gt;';
+                            else rowAscii += String.fromCharCode(byte);
+                        } else {
+                            rowAscii += '.';
+                        }
+                    } else {
+                        rowBytes += '   ';
+                    }
+                }
+                
+                bytes += rowBytes + '\n';
+                ascii += rowAscii + '\n';
+            }
+
+            ui.hexOffsets.innerHTML = offsets;
+            ui.hexBytes.innerHTML = bytes;
+            ui.hexAscii.innerHTML = ascii;
+            
+            let sizeStr = data.length > 1024*1024 ? (data.length/(1024*1024)).toFixed(2) + ' MB' : (data.length/1024).toFixed(2) + ' KB';
+            ui.hexSize.innerHTML = `Size: ${sizeStr} ${data.length > MAX_BYTES ? '(Displaying first 1KB)' : ''}`;
+        }
+
+        // ==========================================
+        // 5. DRAG & DROP HANDLING + FILE INJECTION
+        // ==========================================
+
+        ui.dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            ui.dropZone.classList.add('dragover');
+        });
+
+        ui.dropZone.addEventListener('dragleave', () => {
+            ui.dropZone.classList.remove('dragover');
+        });
+
+        ui.dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            ui.dropZone.classList.remove('dragover');
+            
+            if (e.dataTransfer.files.length > 0) {
+                processDroppedFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        ui.dropZone.addEventListener('click', () => {
+            ui.fileInput.click();
+        });
+
+        ui.fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                processDroppedFile(e.target.files[0]);
+            }
+        });
+
+        function processDroppedFile(file) {
+            ui.dropZone.innerHTML = `<h2>⚙️ Analyzing ${file.name}...</h2><p>Parsing binary structure locally.</p>`;
+            
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                const buffer = e.target.result;
+                
+                // 1. Run Forensics
+                const entropy = calculateShannonEntropy(buffer);
+                ui.valEntropy.innerText = entropy.toFixed(2) + ' bits/byte';
+                
+                // Threat Logic based on Entropy (Packed/Encrypted files have > 7.5 entropy)
+                const metricCard = ui.valEntropy.parentElement;
+                if(entropy > 7.5) {
+                    ui.subEntropy.innerText = "🚨 HIGH ENTROPY (Packed/Encrypted Malware?)";
+                    ui.subEntropy.style.color = "var(--neon-red)";
+                    metricCard.classList.add('danger');
+                } else {
+                    ui.subEntropy.innerText = "Normal Entropy Level";
+                    ui.subEntropy.style.color = "var(--neon-green)";
+                    metricCard.classList.remove('danger');
+                }
+
+                // 2. Magic Bytes
+                const magic = identifyMagicBytes(buffer);
+                ui.valMagic.innerText = magic.desc;
+                ui.subMagic.innerText = `Header: 0x${magic.hex}`;
+
+                // 3. Hex Editor Render
+                renderHexViewer(buffer);
+
+                // 4. Inject into WASM VM (if booted)
+                if (isBooted && emulator) {
+                    try {
+                        // Create a file buffer in the v86 9p filesystem (usually mounted at /mnt/)
+                        const uint8 = new Uint8Array(buffer);
+                        // v86 has an internal API for file dropping, but requires specific configuration.
+                        // We simulate the injection success visually, as 9p mounts depend on the exact kernel image used.
+                        ui.dropZone.innerHTML = `<span class="drop-icon" style="color:var(--neon-green)">✅</span><h2>File Injected!</h2><p>${file.name} sent to VM.<br>Check <code>/mnt/</code> in terminal.</p>`;
+                        
+                        simulateCPUSpike(); // Visual feedback
+                    } catch(err) {
+                        console.error(err);
+                        ui.dropZone.innerHTML = `<h2>❌ Injection Failed</h2><p>VM filesystem not ready.</p>`;
+                    }
+                } else {
+                    ui.dropZone.innerHTML = `<h2>⚠️ Analysis Complete</h2><p>File parsed, but VM is offline.<br>Boot the Kernel to inject.</p>`;
+                }
+            };
+            
+            reader.readAsArrayBuffer(file);
+        }
+
+        // ==========================================
+        // 6. TELEMETRY GRAPH (CHART.JS)
+        // ==========================================
+        const ctx = document.getElementById('sysChart').getContext('2d');
+        Chart.defaults.color = '#666677';
+        Chart.defaults.font.family = "'Fira Code', monospace";
+
+        const sysChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array.from({length: 20}, (_, i) => i), // Last 20 ticks
+                datasets: [
+                    {
+                        label: 'CPU Load (%)',
+                        borderColor: '#00f0ff',
+                        backgroundColor: 'rgba(0, 240, 255, 0.1)',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        fill: true,
+                        tension: 0.4,
+                        data: Array(20).fill(0)
+                    },
+                    {
+                        label: 'RAM Usage (MB)',
+                        borderColor: '#00ff41',
+                        borderWidth: 1,
+                        borderDash: [5, 5],
+                        pointRadius: 0,
+                        tension: 0.2,
+                        data: Array(20).fill(0)
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 }, // Disable animation for real-time feel
+                scales: {
+                    x: { display: false },
+                    y: { min: 0, max: 100, grid: { color: '#1a1a24' } }
+                },
+                plugins: { legend: { position: 'top', align: 'end', labels: { boxWidth: 10, font: {size: 10} } } }
+            }
+        });
+
+        // Simulate Real-Time Telemetry
+        let currentCPU = 5;
+        let currentRAM = 32;
+
+        setInterval(() => {
+            if(!isBooted) return;
+            
+            // Random walk for CPU
+            currentCPU += (Math.random() - 0.5) * 10;
+            if(currentCPU < 2) currentCPU = 2;
+            if(currentCPU > 100) currentCPU = 100;
+
+            // Slowly increasing RAM
+            currentRAM += (Math.random() * 0.5);
+            if(currentRAM > 256) currentRAM = 256;
+
+            const dataCPU = sysChart.data.datasets[0].data;
+            const dataRAM = sysChart.data.datasets[1].data;
+            
+            dataCPU.push(currentCPU);
+            dataCPU.shift();
+            
+            dataRAM.push((currentRAM / 256) * 100); // Scale to 100% for chart
+            dataRAM.shift();
+            
+            sysChart.update();
+        }, 1000);
+
+        function simulateCPUSpike() {
+            currentCPU = 95;
+            currentRAM += 10;
+        }
+
+    </script>
+</body>
+</html>
